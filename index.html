@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta content="origin" name="referrer">
+    <title>ONE</title>
+    <style type="text/css">
+        #result {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+        }
+    </style>
+</head>
+
+<body>
+    <h1 id="result"></h1>
+    <script type="text/javascript" charset="UTF-8">
+        function checkONEPrice() {
+            fetch("https://b1.run/api/uc/v2/price", {
+                body: JSON.stringify({
+                    'quote': 'CNY',
+                    'bases': ['ONE']
+                }),
+                headers: {
+                    'content-type': 'application/json'
+                },
+                method: 'POST'
+            })
+                .then(rsp => rsp.json())
+                .then(json => {
+                    let price = parseFloat(json.data[0].price);
+                    let result = document.getElementById("result");
+                    if (price >= 1) {
+                        result.innerHTML = "到了！";
+                    } else {
+                        result.innerHTML = "没有";
+                    }
+                })
+                .catch(e => { console.log() });
+        }
+        checkONEPrice();
+        window.setInterval(checkONEPrice, 15000);
+    </script>
+</body>
+
+</html>
