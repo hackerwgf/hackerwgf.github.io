@@ -22,19 +22,88 @@
             padding: 0;
         }
 
-        #result {
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 15vw;
+        html,
+        body {
+            height: 100%;
+        }
+
+        .container {
+            width: 100%;
+            height: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .top-container {
+            background-color: black;
+        }
+
+        .bottom-container {
+            background-color: white;
+        }
+
+        .title {
+            font-size: 7vw;
+        }
+
+        .top-title {
+            color: white;
+        }
+
+        .bottom-title {
+            color: black;
         }
     </style>
 </head>
 
 <body>
-    <h1 id="result"></h1>
+    <div class="container top-container">
+        <h1 class="title top-title">ONE 到一块了么？</h1>
+    </div>
+    <div class="container bottom-container">
+        <h1 id="result" class="title bottom-title"></h1>
+    </div>
     <script type="text/javascript" charset="UTF-8">
+        let CHINESE_NUMBER_MAP = new Map();
+        CHINESE_NUMBER_MAP.set('0', '');
+        CHINESE_NUMBER_MAP.set('1', '壹');
+        CHINESE_NUMBER_MAP.set('2', '贰');
+        CHINESE_NUMBER_MAP.set('3', '叁');
+        CHINESE_NUMBER_MAP.set('4', '肆');
+        CHINESE_NUMBER_MAP.set('5', '伍');
+        CHINESE_NUMBER_MAP.set('6', '陆');
+        CHINESE_NUMBER_MAP.set('7', '柒');
+        CHINESE_NUMBER_MAP.set('8', '捌');
+        CHINESE_NUMBER_MAP.set('9', '玖');
+
+        function getChinesePrice(price) {
+            let str = price.toString();
+            let dotIndex = str.indexOf('.');
+            let yuan = CHINESE_NUMBER_MAP.get(str.substring(dotIndex - 1, dotIndex));
+            let jiao = CHINESE_NUMBER_MAP.get(str.substring(dotIndex + 1, dotIndex + 2));
+            let fen = CHINESE_NUMBER_MAP.get(str.substring(dotIndex + 2, dotIndex + 3));
+
+            var yuanTitle = '';
+            if (yuan.length > 0) {
+                yuanTitle = yuan + '元';
+            }
+            var jiaoTitle = '';
+            if (jiao.length > 0) {
+                jiaoTitle = jiao + '角';
+            }
+            var fenTitle = '';
+            if (fen.length > 0) {
+                fenTitle = fen + '分';
+            }
+
+            if (yuan.length > 0) {
+                return yuanTitle + jiaoTitle;
+            } else {
+                return jiaoTitle + fenTitle;
+            }
+        }
+
         function checkONEPrice() {
             fetch("https://b1.run/api/uc/v2/price", {
                 body: JSON.stringify({
@@ -50,10 +119,14 @@
                 .then(json => {
                     let price = parseFloat(json.data[0].price);
                     let result = document.getElementById("result");
-                    if (price >= 1) {
-                        result.innerHTML = "到了！";
+                    if (price >= 10) {
+                        result.innerHTML = "到了！现价 " + parseInt(price) + " 元";
+                    } else if (price >= 1) {
+                        result.innerHTML = "到了！现在大概" + getChinesePrice(price) + "钱";
+                    } else if (price >= 0.01) {
+                        result.innerHTML = "没有，现在大概" + getChinesePrice(price) + "钱";
                     } else {
-                        result.innerHTML = "没有";
+                        result.innerHTML = "没有，现在不到壹分钱";
                     }
                 })
                 .catch(e => { console.log() });
