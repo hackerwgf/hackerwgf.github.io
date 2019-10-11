@@ -105,19 +105,10 @@
         }
 
         function checkONEPrice() {
-            fetch("https://b1.run/api/uc/v2/price", {
-                body: JSON.stringify({
-                    'quote': 'CNY',
-                    'bases': ['ONE']
-                }),
-                headers: {
-                    'content-type': 'application/json'
-                },
-                method: 'POST'
-            })
+            fetch("https://api.coingecko.com/api/v3/coins/one?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false")
                 .then(rsp => rsp.json())
                 .then(json => {
-                    let price = parseFloat(json.data[0].price);
+                    let price = parseFloat(json.market_data.current_price.cny);
                     let result = document.getElementById("result");
                     if (price >= 10) {
                         result.innerHTML = "到了！现价 " + parseInt(price) + " 元";
