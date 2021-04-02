@@ -86,11 +86,11 @@
 
             var yuanTitle = '';
             if (yuan.length > 0) {
-                yuanTitle = yuan + '元';
+                yuanTitle = yuan + '块';
             }
             var jiaoTitle = '';
             if (jiao.length > 0) {
-                jiaoTitle = jiao + '角';
+                jiaoTitle = jiao + '毛';
             }
             var fenTitle = '';
             if (fen.length > 0) {
@@ -111,7 +111,7 @@
                     let price = parseFloat(json.market_data.current_price.cny);
                     let result = document.getElementById("result");
                     if (price >= 10) {
-                        result.innerHTML = "到了！现价 " + parseInt(price) + " 元";
+                        result.innerHTML = "到了！现价 " + parseInt(price) + " 块钱";
                     } else if (price >= 1) {
                         result.innerHTML = "到了！现在大概" + getChinesePrice(price) + "钱";
                     } else if (price >= 0.01) {
