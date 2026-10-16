@@ -11,6 +11,7 @@
         gtag('config', 'UA-142586045-1');
     </script>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta content="origin" name="referrer">
     <link rel="icon" type="image/x-icon" href="/images/favicon.ico">
     <link rel="shortcut icon" type="image/x-icon" href="/images/favicon.ico">
@@ -33,6 +34,9 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            text-align: center;
+            padding: 0 4vw;
+            box-sizing: border-box;
         }
 
         .top-container {
@@ -62,66 +66,226 @@
         <h1 class="title top-title">ONE 到一块了么？</h1>
     </div>
     <div class="container bottom-container">
-        <h1 id="result" class="title bottom-title"></h1>
+        <h1 id="result" class="title bottom-title">查询中…</h1>
     </div>
     <script type="text/javascript" charset="UTF-8">
-        let CHINESE_NUMBER_MAP = new Map();
-        CHINESE_NUMBER_MAP.set('0', '');
-        CHINESE_NUMBER_MAP.set('1', '壹');
-        CHINESE_NUMBER_MAP.set('2', '贰');
-        CHINESE_NUMBER_MAP.set('3', '叁');
-        CHINESE_NUMBER_MAP.set('4', '肆');
-        CHINESE_NUMBER_MAP.set('5', '伍');
-        CHINESE_NUMBER_MAP.set('6', '陆');
-        CHINESE_NUMBER_MAP.set('7', '柒');
-        CHINESE_NUMBER_MAP.set('8', '捌');
-        CHINESE_NUMBER_MAP.set('9', '玖');
+        'use strict';
 
+        // ONE 现货行情取自 BigONE。列出多个在中国大陆可直连的域名，
+        // 每次并发请求、谁先成功用谁，并缓存命中的域名。
+        const BIGONE_HOSTS = [
+            'https://cnbigone.com',
+            'https://big.one',
+            'https://www.bigone.com',
+            'https://h5.bigone138.com',
+            'https://bige.one'
+        ];
+        const ONE_PAIR = 'ONE-USDT';
+
+        // BigONE 的行情响应没有 Access-Control-Allow-Origin，浏览器直接 fetch
+        // 读不到正文。直连全部失败后，再用这些中转去请求同一个 ticker 地址。
+        const CORS_RELAYS = [
+            function (url) { return 'https://proxy.cors.dev/' + url; },
+            function (url) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url); }
+        ];
+
+        // USD/CNY 汇率源（免费、无需 key、支持跨域），按顺序尝试。
+        const RATE_URLS = [
+            'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.min.json',
+            'https://latest.currency-api.pages.dev/v1/currencies/usd.min.json',
+            'https://open.er-api.com/v6/latest/USD'
+        ];
+
+        let cachedHost = null;    // 命中的 BigONE 域名
+        let cachedRate = null;    // 最近一次成功的 USD/CNY 汇率
+        let preferRelay = false;  // 这一轮直连都读不到时，后续轮询走中转
+        let raceToken = 0;
+
+        // 带超时的 fetch
+        function fetchWithTimeout(url, ms) {
+            const ctrl = new AbortController();
+            const timer = setTimeout(function () { ctrl.abort(); }, ms);
+            return fetch(url, { signal: ctrl.signal }).finally(function () { clearTimeout(timer); });
+        }
+
+        function tickerUrl(host) {
+            return host + '/api/v3/asset_pairs/' + ONE_PAIR + '/ticker';
+        }
+
+        function readTicker(url) {
+            return fetchWithTimeout(url, 8000).then(function (rsp) {
+                if (!rsp.ok) throw new Error('http ' + rsp.status);
+                return rsp.json();
+            }).then(function (json) {
+                if (!json || json.code !== 0 || !json.data) throw new Error('bad response');
+                const price = parseFloat(json.data.close);
+                if (!(price > 0)) throw new Error('bad price');
+                return price;
+            });
+        }
+
+        function firstFulfilled(promises) {
+            if (typeof Promise.any === 'function') return Promise.any(promises);
+            return new Promise(function (resolve, reject) {
+                let pending = promises.length;
+                if (!pending) {
+                    reject(new Error('no attempts'));
+                    return;
+                }
+                promises.forEach(function (p) {
+                    Promise.resolve(p).then(resolve, function () {
+                        if (--pending === 0) reject(new Error('all failed'));
+                    });
+                });
+            });
+        }
+
+        // 并发请求所有域名。先成功的那个写入缓存，后来的成功不能覆盖它。
+        function raceHosts(readHost) {
+            const token = ++raceToken;
+            const attempts = BIGONE_HOSTS.map(function (host) {
+                return readHost(host).then(function (price) {
+                    if (token === raceToken && !cachedHost) cachedHost = host;
+                    return price;
+                });
+            });
+            return firstFulfilled(attempts);
+        }
+
+        function readViaRelays(host) {
+            const url = tickerUrl(host);
+            let index = 0;
+            function next() {
+                if (index >= CORS_RELAYS.length) return Promise.reject(new Error('ticker failed'));
+                const relayed = CORS_RELAYS[index++](url);
+                return readTicker(relayed).catch(next);
+            }
+            return next();
+        }
+
+        function raceRelays() {
+            let index = 0;
+            function next() {
+                if (index >= CORS_RELAYS.length) return Promise.reject(new Error('ticker failed'));
+                const relay = CORS_RELAYS[index++];
+                return raceHosts(function (host) {
+                    return readTicker(relay(tickerUrl(host)));
+                }).catch(next);
+            }
+            return next();
+        }
+
+        // 优先直连。浏览器跨域读不到时，改走中转，并记住命中的域名。
+        function getOneUsdt() {
+            if (cachedHost) {
+                const host = cachedHost;
+                const read = preferRelay ? readViaRelays(host) : readTicker(tickerUrl(host));
+                return read.catch(function () {
+                    if (cachedHost === host) cachedHost = null;
+                    preferRelay = false;
+                    return getOneUsdt();
+                });
+            }
+
+            if (!preferRelay) {
+                return raceHosts(function (host) {
+                    return readTicker(tickerUrl(host));
+                }).catch(function () {
+                    return raceRelays().then(function (price) {
+                        preferRelay = true;
+                        return price;
+                    });
+                });
+            }
+
+            return raceRelays().then(function (price) {
+                preferRelay = true;
+                return price;
+            });
+        }
+
+        // 取 USD/CNY 汇率，依次尝试多个源，失败则沿用上一次缓存
+        function getUsdCny() {
+            let index = 0;
+            function next() {
+                if (index >= RATE_URLS.length) {
+                    if (cachedRate) return Promise.resolve(cachedRate);
+                    return Promise.reject(new Error('汇率获取失败'));
+                }
+                const url = RATE_URLS[index++];
+                return fetchWithTimeout(url, 8000).then(function (rsp) {
+                    return rsp.json();
+                }).then(function (d) {
+                    const raw = (d && d.usd && d.usd.cny) || (d && d.rates && d.rates.CNY);
+                    const rate = Number(raw);
+                    if (rate > 0 && isFinite(rate)) {
+                        cachedRate = rate;
+                        return rate;
+                    }
+                    return next();
+                }).catch(next);
+            }
+            return next();
+        }
+
+        const CHINESE_NUMBER_MAP = new Map([
+            ['0', ''], ['1', '壹'], ['2', '贰'], ['3', '叁'], ['4', '肆'],
+            ['5', '伍'], ['6', '陆'], ['7', '柒'], ['8', '捌'], ['9', '玖']
+        ]);
+
+        function cn(digit) {
+            return CHINESE_NUMBER_MAP.get(digit) || '';
+        }
+
+        // 把 0.01 ~ 9.99 之间的价格转成“X块X毛X分”的说法
         function getChinesePrice(price) {
-            let str = price.toString();
-            let dotIndex = str.indexOf('.');
-            let yuan = CHINESE_NUMBER_MAP.get(str.substring(dotIndex - 1, dotIndex));
-            let jiao = CHINESE_NUMBER_MAP.get(str.substring(dotIndex + 1, dotIndex + 2));
-            let fen = CHINESE_NUMBER_MAP.get(str.substring(dotIndex + 2, dotIndex + 3));
+            let fixed = price.toFixed(2); // 例如 "0.37" / "1.50"
+            // 9.995 会进位成 "10.00"，元位不再是一位，按 9.99 显示，避免取字符失败或拼出空白
+            if (fixed.indexOf('.') !== 1) fixed = '9.99';
+            const dot = fixed.indexOf('.');
+            const yuan = cn(fixed.charAt(dot - 1));
+            const jiao = cn(fixed.charAt(dot + 1));
+            const fen = cn(fixed.charAt(dot + 2));
 
-            var yuanTitle = '';
-            if (yuan.length > 0) {
-                yuanTitle = yuan + '块';
-            }
-            var jiaoTitle = '';
-            if (jiao.length > 0) {
-                jiaoTitle = jiao + '毛';
-            }
-            var fenTitle = '';
-            if (fen.length > 0) {
-                fenTitle = fen + '分';
-            }
+            const yuanTitle = yuan ? yuan + '块' : '';
+            const jiaoTitle = jiao ? jiao + '毛' : '';
+            const fenTitle = fen ? fen + '分' : '';
 
-            if (yuan.length > 0) {
+            if (yuan) {
+                // 到了 1 块以上，分不重要
                 return yuanTitle + jiaoTitle;
+            }
+            return jiaoTitle + fenTitle;
+        }
+
+        function render(price) {
+            const result = document.getElementById('result');
+            if (price >= 10) {
+                result.innerHTML = '到了！现价 ' + Math.floor(price) + ' 块钱';
+            } else if (price >= 1) {
+                result.innerHTML = '到了！现在大概' + getChinesePrice(price) + '钱';
+            } else if (price >= 0.01) {
+                result.innerHTML = '没有，现在大概' + getChinesePrice(price) + '钱';
             } else {
-                return jiaoTitle + fenTitle;
+                result.innerHTML = '没有，现在不到壹分钱';
             }
         }
 
         function checkONEPrice() {
-            fetch("https://api.coingecko.com/api/v3/coins/one?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false")
-                .then(rsp => rsp.json())
-                .then(json => {
-                    let price = parseFloat(json.market_data.current_price.cny);
-                    let result = document.getElementById("result");
-                    if (price >= 10) {
-                        result.innerHTML = "到了！现价 " + parseInt(price) + " 块钱";
-                    } else if (price >= 1) {
-                        result.innerHTML = "到了！现在大概" + getChinesePrice(price) + "钱";
-                    } else if (price >= 0.01) {
-                        result.innerHTML = "没有，现在大概" + getChinesePrice(price) + "钱";
-                    } else {
-                        result.innerHTML = "没有，现在不到壹分钱";
-                    }
-                })
-                .catch(e => { console.log() });
+            return Promise.all([getOneUsdt(), getUsdCny()]).then(function (pair) {
+                const cny = pair[0] * pair[1];
+                if (!(cny > 0) || !isFinite(cny)) throw new Error('bad cny price');
+                render(cny);
+            }).catch(function (e) {
+                const result = document.getElementById('result');
+                // 已有价格就保留，首次失败才提示
+                if (!result.innerHTML || result.innerHTML === '查询中…') {
+                    result.innerHTML = '获取价格失败，稍后重试…';
+                }
+                console.log('checkONEPrice failed:', e);
+            });
         }
+
         checkONEPrice();
         window.setInterval(checkONEPrice, 15000);
     </script>
