@@ -17,62 +17,65 @@
     <link rel="shortcut icon" type="image/x-icon" href="/images/favicon.ico">
     <title>ONE 到一块了么？</title>
     <style type="text/css">
-        body,
-        h1 {
-            margin: 0;
-            padding: 0;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
 
-        html,
-        body {
-            height: 100%;
-        }
+        /* K 线背景铺满整屏 */
+        #bg { position: fixed; inset: 0; z-index: 0; background: #0b0e1a; }
+        /* 上半区更暗、下半区更亮，形成上下区分 */
+        #overlay { position: fixed; inset: 0; z-index: 1; background: linear-gradient(180deg,
+            rgba(8,10,20,.80) 0%,
+            rgba(8,10,20,.72) 42%,
+            rgba(11,14,26,.30) 58%,
+            rgba(11,14,26,.12) 100%); }
 
+        .wrap { position: relative; z-index: 2; height: 100%; display: flex; flex-direction: column; }
         .container {
-            width: 100%;
-            height: 50%;
+            flex: 1;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             text-align: center;
             padding: 0 4vw;
-            box-sizing: border-box;
         }
+        .title { font-size: 6.5vw; font-weight: 700; letter-spacing: .02em; color: #fff; }
+        .top-title { text-shadow: 0 2px 24px rgba(0,0,0,.7); }
+        .bottom-title { text-shadow: 0 2px 18px rgba(0,0,0,.55); }
 
-        .top-container {
-            background-color: black;
+        /* 实时价格小字 */
+        .price {
+            margin-top: 2.2vh;
+            font-size: 2.2vw;
+            color: rgba(255,255,255,.72);
+            letter-spacing: .04em;
+            text-shadow: 0 1px 10px rgba(0,0,0,.6);
         }
-
-        .bottom-container {
-            background-color: white;
-        }
-
-        .title {
-            font-size: 7vw;
-        }
-
-        .top-title {
-            color: white;
-        }
-
-        .bottom-title {
-            color: black;
+        @media (max-width: 640px) {
+            .title { font-size: 9vw; }
+            .price { font-size: 4.2vw; }
         }
     </style>
 </head>
 
 <body>
-    <div class="container top-container">
-        <h1 class="title top-title">ONE 到一块了么？</h1>
+    <canvas id="bg"></canvas>
+    <div id="overlay"></div>
+    <div class="wrap">
+        <div class="container">
+            <h1 class="title top-title">ONE 到一块了么？</h1>
+        </div>
+        <div class="container">
+            <h1 id="result" class="title bottom-title">查询中…</h1>
+            <div id="price" class="price"></div>
+        </div>
     </div>
-    <div class="container bottom-container">
-        <h1 id="result" class="title bottom-title">查询中…</h1>
-    </div>
+
     <script type="text/javascript" charset="UTF-8">
         'use strict';
 
         // ONE 现货行情取自 BigONE。这些域名没有 CORS 头，浏览器直接 fetch 读不到正文，
-        // 所以 ticker 只经代理请求。五个域名是代理背后的候选地址，并发谁先成功用谁，并缓存。
+        // 所以请求只经代理。五个域名是代理背后的候选地址，并发谁先成功用谁，并缓存。
         const BIGONE_HOSTS = [
             'https://cnbigone.com',
             'https://big.one',
@@ -99,22 +102,59 @@
         let cachedRate = null;    // 最近一次成功的 USD/CNY 汇率
         let raceToken = 0;
 
-        // 带超时的 fetch
         function fetchWithTimeout(url, ms) {
             const ctrl = new AbortController();
             const timer = setTimeout(function () { ctrl.abort(); }, ms);
             return fetch(url, { signal: ctrl.signal }).finally(function () { clearTimeout(timer); });
         }
 
-        function tickerUrl(host) {
-            return host + '/api/v3/asset_pairs/' + ONE_PAIR + '/ticker';
+        // 走代理读取任意 BigONE 接口（返回 JSON）。
+        function readViaRelay(path) {
+            function tryHost(host, relay) {
+                return fetchWithTimeout(relay(host + path), 8000).then(function (rsp) {
+                    if (!rsp.ok) throw new Error('http ' + rsp.status);
+                    return rsp.json();
+                });
+            }
+            if (cachedHost) {
+                const host = cachedHost;
+                let ri = 0;
+                const nextRelay = function () {
+                    if (ri >= CORS_RELAYS.length) { cachedHost = null; return raceAll(); }
+                    return tryHost(host, CORS_RELAYS[ri++]).catch(nextRelay);
+                };
+                return nextRelay();
+            }
+            return raceAll();
+
+            function raceAll() {
+                let ri = 0;
+                const nextRelay = function () {
+                    if (ri >= CORS_RELAYS.length) return Promise.reject(new Error('all relays failed'));
+                    const relay = CORS_RELAYS[ri++];
+                    const token = ++raceToken;
+                    const attempts = BIGONE_HOSTS.map(function (host) {
+                        return tryHost(host, relay).then(function (json) {
+                            if (token === raceToken && !cachedHost) cachedHost = host;
+                            return json;
+                        });
+                    });
+                    const any = (typeof Promise.any === 'function')
+                        ? Promise.any(attempts)
+                        : new Promise(function (resolve, reject) {
+                            let pending = attempts.length;
+                            attempts.forEach(function (p) {
+                                Promise.resolve(p).then(resolve, function () { if (--pending === 0) reject(new Error('all failed')); });
+                            });
+                        });
+                    return any.catch(nextRelay);
+                };
+                return nextRelay();
+            }
         }
 
-        function readTicker(url) {
-            return fetchWithTimeout(url, 8000).then(function (rsp) {
-                if (!rsp.ok) throw new Error('http ' + rsp.status);
-                return rsp.json();
-            }).then(function (json) {
+        function getOneUsdt() {
+            return readViaRelay('/api/v3/asset_pairs/' + ONE_PAIR + '/ticker').then(function (json) {
                 if (!json || json.code !== 0 || !json.data) throw new Error('bad response');
                 const price = parseFloat(json.data.close);
                 if (!(price > 0)) throw new Error('bad price');
@@ -122,71 +162,6 @@
             });
         }
 
-        function firstFulfilled(promises) {
-            if (typeof Promise.any === 'function') return Promise.any(promises);
-            return new Promise(function (resolve, reject) {
-                let pending = promises.length;
-                if (!pending) {
-                    reject(new Error('no attempts'));
-                    return;
-                }
-                promises.forEach(function (p) {
-                    Promise.resolve(p).then(resolve, function () {
-                        if (--pending === 0) reject(new Error('all failed'));
-                    });
-                });
-            });
-        }
-
-        // 并发请求所有域名。先成功的那个写入缓存，后来的成功不能覆盖它。
-        function raceHosts(readHost) {
-            const token = ++raceToken;
-            const attempts = BIGONE_HOSTS.map(function (host) {
-                return readHost(host).then(function (price) {
-                    if (token === raceToken && !cachedHost) cachedHost = host;
-                    return price;
-                });
-            });
-            return firstFulfilled(attempts);
-        }
-
-        function readViaRelays(host) {
-            const url = tickerUrl(host);
-            let index = 0;
-            function next() {
-                if (index >= CORS_RELAYS.length) return Promise.reject(new Error('ticker failed'));
-                const relayed = CORS_RELAYS[index++](url);
-                return readTicker(relayed).catch(next);
-            }
-            return next();
-        }
-
-        // 主代理上并发五个域名；这一轮全部失败，再换下一个代理。
-        function raceRelays() {
-            let index = 0;
-            function next() {
-                if (index >= CORS_RELAYS.length) return Promise.reject(new Error('ticker failed'));
-                const relay = CORS_RELAYS[index++];
-                return raceHosts(function (host) {
-                    return readTicker(relay(tickerUrl(host)));
-                }).catch(next);
-            }
-            return next();
-        }
-
-        // 只通过代理取行情。已记住的域名先用主代理，失败再换备用代理；都失败就重新竞速。
-        function getOneUsdt() {
-            if (cachedHost) {
-                const host = cachedHost;
-                return readViaRelays(host).catch(function () {
-                    if (cachedHost === host) cachedHost = null;
-                    return getOneUsdt();
-                });
-            }
-            return raceRelays();
-        }
-
-        // 取 USD/CNY 汇率，依次尝试多个源，失败则沿用上一次缓存
         function getUsdCny() {
             let index = 0;
             function next() {
@@ -200,10 +175,7 @@
                 }).then(function (d) {
                     const raw = (d && d.usd && d.usd.cny) || (d && d.rates && d.rates.CNY);
                     const rate = Number(raw);
-                    if (rate > 0 && isFinite(rate)) {
-                        cachedRate = rate;
-                        return rate;
-                    }
+                    if (rate > 0 && isFinite(rate)) { cachedRate = rate; return rate; }
                     return next();
                 }).catch(next);
             }
@@ -214,29 +186,19 @@
             ['0', ''], ['1', '壹'], ['2', '贰'], ['3', '叁'], ['4', '肆'],
             ['5', '伍'], ['6', '陆'], ['7', '柒'], ['8', '捌'], ['9', '玖']
         ]);
+        function cn(digit) { return CHINESE_NUMBER_MAP.get(digit) || ''; }
 
-        function cn(digit) {
-            return CHINESE_NUMBER_MAP.get(digit) || '';
-        }
-
-        // 把 0.01 ~ 9.99 之间的价格转成“X块X毛X分”的说法
         function getChinesePrice(price) {
-            let fixed = price.toFixed(2); // 例如 "0.37" / "1.50"
-            // 9.995 会进位成 "10.00"，元位不再是一位，按 9.99 显示，避免取字符失败或拼出空白
+            let fixed = price.toFixed(2);
             if (fixed.indexOf('.') !== 1) fixed = '9.99';
             const dot = fixed.indexOf('.');
             const yuan = cn(fixed.charAt(dot - 1));
             const jiao = cn(fixed.charAt(dot + 1));
             const fen = cn(fixed.charAt(dot + 2));
-
             const yuanTitle = yuan ? yuan + '块' : '';
             const jiaoTitle = jiao ? jiao + '毛' : '';
             const fenTitle = fen ? fen + '分' : '';
-
-            if (yuan) {
-                // 到了 1 块以上，分不重要
-                return yuanTitle + jiaoTitle;
-            }
+            if (yuan) return yuanTitle + jiaoTitle;
             return jiaoTitle + fenTitle;
         }
 
@@ -253,14 +215,28 @@
             }
         }
 
+        // 实时价小字
+        function renderPrice(cny) {
+            const el = document.getElementById('price');
+            let text;
+            if (cny >= 1) text = '¥' + cny.toFixed(3);
+            else if (cny >= 0.001) text = '¥' + cny.toFixed(4);
+            else text = '¥' + cny.toPrecision(2);
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            el.textContent = text + ' · ONE/CNY · ' + hh + ':' + mm + ':' + ss + ' 更新';
+        }
+
         function checkONEPrice() {
             return Promise.all([getOneUsdt(), getUsdCny()]).then(function (pair) {
                 const cny = pair[0] * pair[1];
                 if (!(cny > 0) || !isFinite(cny)) throw new Error('bad cny price');
                 render(cny);
+                renderPrice(cny);
             }).catch(function (e) {
                 const result = document.getElementById('result');
-                // 已有价格就保留，首次失败才提示
                 if (!result.innerHTML || result.innerHTML === '查询中…') {
                     result.innerHTML = '获取价格失败，稍后重试…';
                 }
@@ -268,8 +244,80 @@
             });
         }
 
+        // ---------- K 线背景 ----------
+        let candles = [];
+
+        function getCandles() {
+            return readViaRelay('/api/v3/asset_pairs/' + ONE_PAIR + '/candles?period=day1&limit=90').then(function (json) {
+                if (!json || json.code !== 0 || !Array.isArray(json.data)) throw new Error('bad candles');
+                const list = json.data.slice().reverse().map(function (x) {
+                    return { o: +x.open, h: +x.high, l: +x.low, c: +x.close };
+                }).filter(function (x) { return x.h > 0 && x.l > 0; });
+                if (list.length) { candles = list; drawChart(); }
+            }).catch(function (e) { console.log('getCandles failed:', e); });
+        }
+
+        function drawChart() {
+            const cv = document.getElementById('bg');
+            if (!candles.length) return;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const w = cv.width = Math.floor(innerWidth * dpr);
+            const h = cv.height = Math.floor(innerHeight * dpr);
+            cv.style.width = innerWidth + 'px';
+            cv.style.height = innerHeight + 'px';
+            const ctx = cv.getContext('2d');
+            ctx.fillStyle = '#0b0e1a';
+            ctx.fillRect(0, 0, w, h);
+
+            const C = candles;
+            let lo = Math.min.apply(null, C.map(function (x) { return x.l; }));
+            let hi = Math.max.apply(null, C.map(function (x) { return x.h; }));
+            const pad = (hi - lo) * 0.15 || hi * 0.1;
+            lo -= pad; hi += pad;
+            const n = C.length;
+            const plotTop = h * 0.08, plotBot = h * 0.92;
+            const x = function (i) { return (i + 0.5) / n * w; };
+            const y = function (v) { return plotBot - (v - lo) / (hi - lo) * (plotBot - plotTop); };
+
+            // 面积渐变
+            ctx.beginPath();
+            ctx.moveTo(x(0), y(C[0].c));
+            for (let i = 1; i < n; i++) ctx.lineTo(x(i), y(C[i].c));
+            ctx.lineTo(x(n - 1), h); ctx.lineTo(x(0), h); ctx.closePath();
+            const g = ctx.createLinearGradient(0, plotTop, 0, h);
+            g.addColorStop(0, 'rgba(106,84,191,0.45)');
+            g.addColorStop(1, 'rgba(106,84,191,0.02)');
+            ctx.fillStyle = g; ctx.fill();
+
+            // 蜡烛
+            const cw = Math.max(2, (w / n) * 0.55);
+            for (let i = 0; i < n; i++) {
+                const up = C[i].c >= C[i].o;
+                const col = up ? 'rgba(38,194,129,0.55)' : 'rgba(230,80,90,0.55)';
+                ctx.strokeStyle = col; ctx.fillStyle = col;
+                ctx.lineWidth = Math.max(1, w / n * 0.08);
+                ctx.beginPath(); ctx.moveTo(x(i), y(C[i].h)); ctx.lineTo(x(i), y(C[i].l)); ctx.stroke();
+                const yo = y(C[i].o), yc = y(C[i].c);
+                const top = Math.min(yo, yc), bh = Math.max(2, Math.abs(yc - yo));
+                ctx.fillRect(x(i) - cw / 2, top, cw, bh);
+            }
+
+            // 收盘线
+            ctx.beginPath();
+            ctx.moveTo(x(0), y(C[0].c));
+            for (let i = 1; i < n; i++) ctx.lineTo(x(i), y(C[i].c));
+            ctx.strokeStyle = 'rgba(160,140,255,0.9)';
+            ctx.lineWidth = Math.max(1.5, w / n * 0.12);
+            ctx.stroke();
+        }
+
+        window.addEventListener('resize', drawChart);
+
+        // 启动
         checkONEPrice();
-        window.setInterval(checkONEPrice, 15000);
+        getCandles();
+        window.setInterval(checkONEPrice, 5000);       // 价格 5s 刷新
+        window.setInterval(getCandles, 10 * 60 * 1000); // K 线 10 分钟刷新
     </script>
 </body>
 
