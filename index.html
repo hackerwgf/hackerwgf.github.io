@@ -55,12 +55,33 @@
             .title { font-size: 9vw; }
             .price { font-size: 4.2vw; }
         }
+
+        /* 右上角去交易按钮 */
+        .trade-btn {
+            position: fixed;
+            z-index: 3;
+            top: 3vh;
+            right: 3vw;
+            padding: .7em 1.2em;
+            font-size: 1.5vw;
+            color: #fff;
+            text-decoration: none;
+            background: rgba(255,255,255,.10);
+            border: 1px solid rgba(255,255,255,.28);
+            border-radius: 999px;
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
+            letter-spacing: .04em;
+        }
+        .trade-btn:hover { background: rgba(255,255,255,.18); }
+        @media (max-width: 640px) { .trade-btn { font-size: 3.4vw; } }
     </style>
 </head>
 
 <body>
     <canvas id="bg"></canvas>
     <div id="overlay"></div>
+    <a class="trade-btn" href="https://cnbigone.com/trade/ONE-USDT" target="_blank" rel="noopener">去交易</a>
     <div class="wrap">
         <div class="container">
             <h1 class="title top-title">ONE 到一块了么？</h1>
