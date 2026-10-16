@@ -71,8 +71,8 @@
     <script type="text/javascript" charset="UTF-8">
         'use strict';
 
-        // ONE 现货行情取自 BigONE。列出多个在中国大陆可直连的域名，
-        // 每次并发请求、谁先成功用谁，并缓存命中的域名。
+        // ONE 现货行情取自 BigONE。这些域名没有 CORS 头，浏览器直接 fetch 读不到正文，
+        // 所以 ticker 只经代理请求。五个域名是代理背后的候选地址，并发谁先成功用谁，并缓存。
         const BIGONE_HOSTS = [
             'https://cnbigone.com',
             'https://big.one',
@@ -82,8 +82,7 @@
         ];
         const ONE_PAIR = 'ONE-USDT';
 
-        // BigONE 的行情响应没有 Access-Control-Allow-Origin，浏览器直接 fetch
-        // 读不到正文。直连全部失败后，再用这些中转去请求同一个 ticker 地址。
+        // 主用 proxy.cors.dev，失败再回退 allorigins。
         const CORS_RELAYS = [
             function (url) { return 'https://proxy.cors.dev/' + url; },
             function (url) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url); }
@@ -98,7 +97,6 @@
 
         let cachedHost = null;    // 命中的 BigONE 域名
         let cachedRate = null;    // 最近一次成功的 USD/CNY 汇率
-        let preferRelay = false;  // 这一轮直连都读不到时，后续轮询走中转
         let raceToken = 0;
 
         // 带超时的 fetch
@@ -163,6 +161,7 @@
             return next();
         }
 
+        // 主代理上并发五个域名；这一轮全部失败，再换下一个代理。
         function raceRelays() {
             let index = 0;
             function next() {
@@ -175,33 +174,16 @@
             return next();
         }
 
-        // 优先直连。浏览器跨域读不到时，改走中转，并记住命中的域名。
+        // 只通过代理取行情。已记住的域名先用主代理，失败再换备用代理；都失败就重新竞速。
         function getOneUsdt() {
             if (cachedHost) {
                 const host = cachedHost;
-                const read = preferRelay ? readViaRelays(host) : readTicker(tickerUrl(host));
-                return read.catch(function () {
+                return readViaRelays(host).catch(function () {
                     if (cachedHost === host) cachedHost = null;
-                    preferRelay = false;
                     return getOneUsdt();
                 });
             }
-
-            if (!preferRelay) {
-                return raceHosts(function (host) {
-                    return readTicker(tickerUrl(host));
-                }).catch(function () {
-                    return raceRelays().then(function (price) {
-                        preferRelay = true;
-                        return price;
-                    });
-                });
-            }
-
-            return raceRelays().then(function (price) {
-                preferRelay = true;
-                return price;
-            });
+            return raceRelays();
         }
 
         // 取 USD/CNY 汇率，依次尝试多个源，失败则沿用上一次缓存
